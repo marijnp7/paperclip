@@ -28,10 +28,12 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 ## Trusted PR Workflow
 
-This fork calls `./.github/workflows/pr-trusted.yml`, which calls the local
-`ci-routing.yml`. Both definitions stay on the tested revision. This prevents
-new upstream CI checks from requiring files absent from this fork. The upstream
-AWS runner admission restrictions still apply; this fork uses hosted runners.
+This fork pins the upstream `pr-trusted.yml` to commit
+`06d4fe3121e57ca834b533e757bd0f540fadabc5`, matching its imported code. This prevents
+new upstream CI checks from requiring files absent from this fork, while keeping
+the CI definition outside PR control. Update the pin when importing upstream
+changes. The upstream AWS admission restrictions still apply; this fork uses
+hosted runners.
 The runtime-image workflow publishes and signs under `ghcr.io/<repository-owner>`.
 
 Upstream runner configuration:
