@@ -1,8 +1,6 @@
 name: Trusted PR CI
 
-# Rollout is intentionally two-step: merge this reusable workflow first, then
-# replace pr.yml with an immutable-SHA caller so the active CI definition cannot
-# drift from this file.
+# Called locally by pr.yml so the workflow and checkout stay on one revision.
 on:
   workflow_call:
 

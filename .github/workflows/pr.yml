@@ -15,5 +15,5 @@ jobs:
   ci:
     if: github.event.action != 'labeled' || github.event.label.name == 'profile-ci'
     # Master requires CODEOWNERS review for .github/**, including this workflow.
-    # The AWS runner group permits pr-trusted.yml@refs/heads/master.
+    # Use this fork's tested revision; upstream master can require newer files.
     uses: ./.github/workflows/pr-trusted.yml

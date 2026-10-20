@@ -28,7 +28,13 @@ GitHub Actions owns `pnpm-lock.yaml`.
 
 ## Trusted PR Workflow
 
-The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+This fork calls `./.github/workflows/pr-trusted.yml`, which calls the local
+`ci-routing.yml`. Both definitions stay on the tested revision. This prevents
+new upstream CI checks from requiring files absent from this fork. The upstream
+AWS runner admission restrictions still apply; this fork uses hosted runners.
+The runtime-image workflow publishes and signs under `ghcr.io/<repository-owner>`.
+
+Upstream runner configuration:
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a
