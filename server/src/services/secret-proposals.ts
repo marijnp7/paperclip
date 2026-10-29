@@ -735,15 +735,15 @@ export function createSecretProposalsService(db: Db) {
       await assertBindingSnapshotCurrent(proposal, txDb, true);
       return proposal;
     };
-    const saved = await db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const proposal = await loadForApproval(txDb);
       if (proposal.kind === "secret") {
         const created = await applySecretApproval(txDb, proposal, input);
-        return { kind: "secret" as const, proposal: await markApproved(txDb, proposal, {
+        return markApproved(txDb, proposal, {
           resolvedByUserId: input.resolvedByUserId,
           createdSecretId: created.id,
-        }) };
+        });
       }
 
       let secretId = proposal.secretId;
@@ -760,6 +760,14 @@ export function createSecretProposalsService(db: Db) {
             throw conflict(`Binding proposal requires pending secret proposal ${dependency.id}; retry with cascade=true`);
           }
           assertNotExpired(dependency);
+          // Remote vault writes cannot be rolled back with the binding transaction.
+          // Approve the secret separately before binding it in that case.
+          if (input.overrides?.providerConfigId) {
+            const providerConfig = await secretService(txDb).getProviderConfigById(input.overrides.providerConfigId);
+            if (providerConfig?.provider !== "local_encrypted") {
+              throw conflict("Cascade approval requires a local encrypted secret provider; approve external vault secrets separately");
+            }
+          }
           const created = await applySecretApproval(txDb, dependency, input);
           await markApproved(txDb, dependency, {
             resolvedByUserId: input.resolvedByUserId,
@@ -769,15 +777,7 @@ export function createSecretProposalsService(db: Db) {
         }
       }
       if (!secretId) throw conflict("Binding proposal has no approved secret");
-      return { kind: "binding" as const, secretId };
-    });
-    if (saved.kind === "secret") return saved.proposal;
-
-    // Keep the approved secret if applying its reference fails.
-    return db.transaction(async tx => {
-      const txDb = tx as unknown as Db;
-      const proposal = await loadForApproval(txDb);
-      const liveSecret = await secretService(txDb).getById(saved.secretId);
+      const liveSecret = await secretService(txDb).getById(secretId);
       if (!liveSecret || liveSecret.companyId !== companyId || liveSecret.status !== "active") {
         throw conflict("Binding proposal secret is not active");
       }

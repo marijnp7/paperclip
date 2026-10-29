@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, activityLog, agentConfigRevisions, companies, companyMemberships, companySecretBindings, companySecrets, createDb } from "@paperclipai/db";
+import { agents, activityLog, agentConfigRevisions, companies, companyMemberships, companySecretBindings, companySecrets, createDb, principalPermissionGrants } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentRoutes } from "../routes/agents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -23,6 +23,7 @@ suite("agent secret binding authorization over HTTP", () => {
     await db.delete(activityLog);
     await db.delete(agentConfigRevisions);
     await db.delete(companySecretBindings);
+    await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companySecrets);
     await db.delete(agents);
@@ -100,12 +101,24 @@ suite("agent secret binding authorization over HTTP", () => {
     expect(await db.select().from(companySecretBindings)).toHaveLength(0);
   });
 
-  it("allows an explicitly privileged board configurator to bind the target", async () => {
+  it("requires a real agent configuration grant for a concrete target", async () => {
     const f = await fixture();
-    const result = await request(app({ type: "board", userId: "operator", source: "local_implicit" }))
-      .patch(`/api/agents/${f.agentId}`).send({ adapterConfig: { env: { OPENAI_API_KEY: ref(f.secretId) } } });
+    const configuratorId = randomUUID();
+    await db.insert(agents).values({ id: configuratorId, companyId: f.companyId, name: "Configurator", role: "engineer", adapterType: "codex_local", adapterConfig: {}, status: "idle" });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: configuratorId, status: "active" });
+    const caller = app({ type: "agent", companyId: f.companyId, agentId: configuratorId, source: "agent_key" });
+    const body = { adapterConfig: { env: { OPENAI_API_KEY: ref(f.secretId) } } };
+    const denied = await request(caller).patch(`/api/agents/${f.agentId}`).send(body);
+    expect(denied.status).toBe(403);
+    expect(denied.body.details?.reason).toBe("deny_no_grant");
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: configuratorId, permissionKey: "agents:configure" });
+    const result = await request(caller).patch(`/api/agents/${f.agentId}`).send(body);
     expect(result.status, JSON.stringify(result.body)).toBe(200);
     expect(await db.select().from(companySecretBindings)).toHaveLength(1);
+    const foreign = await request(app({ type: "agent", companyId: randomUUID(), agentId: configuratorId, source: "agent_key" }))
+      .patch(`/api/agents/${f.agentId}`).send(body);
+    expect(foreign.status).toBe(404);
   });
 
   it("rejects a peer and conceals a foreign tenant target", async () => {
@@ -143,6 +156,18 @@ suite("agent secret binding authorization over HTTP", () => {
     expect(await db.select().from(companySecretBindings)).toHaveLength(0);
   });
 
+  it("denies direct creation with a new binding before creating an agent", async () => {
+    const f = await fixture();
+    await db.update(agents).set({ permissions: { canCreateAgents: true } }).where(eq(agents.id, f.agentId));
+    const result = await request(app({ type: "agent", companyId: f.companyId, agentId: f.agentId, source: "agent_key" }))
+      .post(`/api/companies/${f.companyId}/agents`)
+      .send({ name: "Direct child", role: "engineer", adapterType: "codex_local", adapterConfig: { env: { OPENAI_API_KEY: ref(f.secretId) } } });
+    expect(result.status, JSON.stringify(result.body)).toBe(403);
+    expect(await db.select().from(agents).where(eq(agents.companyId, f.companyId))).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+  });
+
   it("denies a schema secret field before creating managed secret material", async () => {
     const f = await fixture();
     await db.update(agents).set({ adapterType: "hermes_gateway", adapterConfig: { apiBaseUrl: "https://example.invalid" } }).where(eq(agents.id, f.agentId));
@@ -168,11 +193,16 @@ suite("agent secret binding authorization over HTTP", () => {
 
   it("checks bindings carried through an adapter switch", async () => {
     const f = await fixture();
-    const result = await request(app({ type: "agent", companyId: f.companyId, agentId: f.agentId, source: "agent_key" }))
-      .patch(`/api/agents/${f.agentId}`).send({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", env: { OPENAI_API_KEY: ref(f.secretId) } } });
+    const self = app({ type: "agent", companyId: f.companyId, agentId: f.agentId, source: "agent_key" });
+    const plain = await request(self).patch(`/api/agents/${f.agentId}`)
+      .send({ adapterType: "claude_local", adapterConfig: { env: {} } });
+    expect(plain.status, JSON.stringify(plain.body)).toBe(200);
+    const result = await request(self).patch(`/api/agents/${f.agentId}`)
+      .send({ adapterType: "codex_local", adapterConfig: { env: { OPENAI_API_KEY: ref(f.secretId) } } });
     expect(result.status, JSON.stringify(result.body)).toBe(403);
+    expect(result.body.details?.reason).toBe("deny_no_grant");
     expect(await db.select().from(companySecretBindings)).toHaveLength(0);
     const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-    expect(saved.adapterType).toBe("codex_local");
+    expect(saved.adapterType).toBe("claude_local");
   });
 });

@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
+  approvals,
   agents,
   companies,
   companySecretBindings,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(approvals);
     await db.delete(principalPermissionGrants);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
@@ -104,6 +106,48 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(bindings).toHaveLength(1);
     const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
     expect(saved.adapterConfig).toMatchObject(patch.adapterConfig);
+  });
+
+  it("waits for a direct binding writer and compares the committed binding", async () => {
+    const companyId = await seedCompany();
+    const originalSecretId = randomUUID();
+    const replacementSecretId = randomUUID();
+    await db.insert(companySecrets).values([
+      { id: originalSecretId, companyId, name: `original-${originalSecretId}`, key: `original-${originalSecretId}` },
+      { id: replacementSecretId, companyId, name: `replacement-${replacementSecretId}`, key: `replacement-${replacementSecretId}` },
+    ]);
+    const agent = await authorizedHire(companyId, {
+      name: "Race target", adapterType: "codex_local",
+      adapterConfig: { env: { TOKEN: { type: "secret_ref", secretId: originalSecretId } } },
+    });
+    let releaseLock!: () => void;
+    let locked!: () => void;
+    const lockReady = new Promise<void>(resolve => { locked = resolve; });
+    const release = new Promise<void>(resolve => { releaseLock = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agent.id)).for("no key update");
+      locked();
+      await release;
+    });
+    await lockReady;
+    let writerFinished = false;
+    const writer = secretService(db).syncSecretRefsForTarget(companyId, { targetType: "agent", targetId: agent.id }, [
+      { configPath: "env.TOKEN", secretId: replacementSecretId },
+    ], { replaceAll: true }).then(() => { writerFinished = true; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(writerFinished).toBe(false);
+    let updateFinished = false;
+    const update = agentService(db).update(agent.id, {
+      adapterConfig: { env: { TOKEN: { type: "secret_ref", secretId: originalSecretId } } },
+    }).then(() => { updateFinished = true; return "allowed"; }, error => { updateFinished = true; return error; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(updateFinished).toBe(false);
+    releaseLock();
+    await holder;
+    await writer;
+    expect(await update).toMatchObject({ status: 403 });
+    const [persisted] = await db.select().from(companySecretBindings).where(eq(companySecretBindings.targetId, agent.id));
+    expect(persisted.secretId).toBe(replacementSecretId);
   });
 
   it("compares all persisted binding fields including projection class and key", async () => {
@@ -536,5 +580,21 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
 
     const reloaded = await agentService(db).getById(agentId);
     expect(reloaded?.status).toBe("pending_approval");
+  });
+
+  it("does not treat pending hire approval as authority for a new binding", async () => {
+    const companyId = await seedCompany();
+    const agentId = randomUUID();
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({ id: secretId, companyId, name: `synthetic-${secretId}`, key: `synthetic-${secretId}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Pending", role: "engineer", status: "pending_approval", adapterType: "codex_local", adapterConfig: { env: {} }, runtimeConfig: {}, permissions: {} });
+    await db.insert(approvals).values({ companyId, type: "hire_agent", status: "pending", payload: {
+      agentId, adapterConfig: { env: { TOKEN: { type: "secret_ref", secretId } } },
+    } });
+    await expect(createAgentLifecycle(db).approveHire(agentId)).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0].status).toBe("pending_approval");
+    expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect((await db.select().from(approvals))[0].status).toBe("pending");
   });
 });
