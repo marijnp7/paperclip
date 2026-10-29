@@ -40,7 +40,10 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     await tempDb?.cleanup();
   });
 
-  it("allows exactly one of concurrent attempts 20 and 21", async () => {
+  it.each([
+    ["issue source", false],
+    ["timer agent source", true],
+  ] as const)("allows exactly one of concurrent attempts 20 and 21 for %s", async (_label, timer) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -69,7 +72,8 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       agentId,
       status: "running",
       responsibleUserId: "board-user",
-      contextSnapshot: { issueId: sourceIssueId },
+      invocationSource: timer ? "timer" : "on_demand",
+      contextSnapshot: timer ? {} : { issueId: sourceIssueId },
     });
     await db.insert(activityLog).values(
       Array.from({ length: 18 }, () => ({
@@ -107,10 +111,15 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       .toEqual([19, 20, 21]);
 
     const recorded = await db
-      .select({ action: activityLog.action })
+      .select({ action: activityLog.action, details: activityLog.details })
       .from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
+    const newRows = recorded.filter((row) => row.details !== null);
+    expect(newRows).toHaveLength(3);
+    if (timer) {
+      expect(newRows[0]?.details).toMatchObject({ sourceIssueId: null, sourceAgentId: agentId, sourceType: "agent" });
+    }
   });
 });
