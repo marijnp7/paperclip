@@ -1,4 +1,5 @@
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
+import { newAgentSecretBindings } from "./agent-binding-authorization.js";
 import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -702,6 +703,12 @@ export function createSecretProposalsService(db: Db) {
     }
     const updated = await updateAgentConfigurationInTransaction(txDb, target.id, { adapterConfig }, {
       recordRevision: { createdByUserId: resolvedByUserId, source: "patch" },
+      assertSecretBindingChange: async (lockedDb, lockedTarget, config) => {
+        const additions = await newAgentSecretBindings(lockedDb, { ...lockedTarget, adapterConfig: config });
+        if (additions.some(ref => ref.configPath !== proposal.configPath || ref.secretId !== secret.id)) {
+          throw conflict("Binding approval cannot add another secret reference");
+        }
+      },
     });
     if (!updated) throw notFound("Target agent not found");
     await logActivity(txDb, {

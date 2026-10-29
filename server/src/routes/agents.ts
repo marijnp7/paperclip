@@ -3,6 +3,7 @@ import { agentHarnessType, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+import { newAgentSecretBindings } from "../services/agent-binding-authorization.js";
 
 import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
@@ -2139,6 +2140,7 @@ export function agentRoutes(
     adapterType: string | null | undefined;
     adapterConfig: Record<string, unknown>;
     constraintAdapterConfig?: Record<string, unknown>;
+    dryRun?: boolean;
   }): Promise<Record<string, unknown>> {
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
@@ -2146,6 +2148,7 @@ export function agentRoutes(
       {
         strictMode: strictSecretsMode,
         adapterType: input.adapterType ?? null,
+        dryRun: input.dryRun,
       },
     );
     await assertAdapterConfigConstraints(
@@ -2498,6 +2501,18 @@ export function agentRoutes(
     }
 
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function assertNewBindingAuthorized(
+    req: Request,
+    target: { id: string; companyId: string },
+    adapterConfig: unknown,
+    dbClient: Db = db,
+  ) {
+    if ((await newAgentSecretBindings(dbClient, { ...target, adapterConfig })).length === 0) return;
+    // A binding has no generic self-consent target. Require the same explicit
+    // protected-change decision used for approving binding proposals.
+    await assertCanApplyProtectedAgentChange(req, target, []);
   }
 
   async function assertCanManageInstructionsPath(req: Request, targetAgent: { id: string; companyId: string }) {
@@ -4097,6 +4112,10 @@ export function agentRoutes(
         : null,
     );
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    await assertNewBindingAuthorized(req, existing, await secretsSvc.normalizeAdapterConfigForPersistence(
+      existing.companyId, rollbackAdapterConfig,
+      { strictMode: strictSecretsMode, adapterType: rollbackAdapterType, dryRun: true },
+    ));
     const existingRollbackProvider = asRecord(existing.adapterConfig)?.provider;
     if (rollbackAdapterType !== existing.adapterType || (rollbackAdapterType === "paperclip_runner"
       && rollbackAdapterConfig.provider !== existingRollbackProvider
@@ -4132,6 +4151,8 @@ export function agentRoutes(
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
+      assertSecretBindingChange: (tx, target, adapterConfig) =>
+        assertNewBindingAuthorized(req, target, adapterConfig, tx),
     });
     if (!updated) {
       res.status(404).json({ error: "Revision not found" });
@@ -4324,10 +4345,14 @@ export function agentRoutes(
       ),
       "add",
     );
+    await assertNewBindingAuthorized(req, { id: hiredAgentId, companyId },
+      await secretsSvc.normalizeAdapterConfigForPersistence(companyId, desiredSkillAssignment.adapterConfig,
+        { strictMode: strictSecretsMode, adapterType: hireInput.adapterType, dryRun: true }));
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
       adapterType: hireInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
+      dryRun: true,
     });
     const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, hireInput.adapterType, normalizedAdapterConfig, hireInput.runtimeConfig);
     const normalizedHireInput = {
@@ -4395,12 +4420,15 @@ export function agentRoutes(
         {
           id: hiredAgentId,
           ...normalizedHireInput,
+          adapterConfig: desiredSkillAssignment.adapterConfig,
           status,
           spentMonthlyCents: 0,
           lastHeartbeatAt: null,
         },
         {
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          assertSecretBindingChange: (tx, target, adapterConfig) =>
+            assertNewBindingAuthorized(req, target, adapterConfig, tx),
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
@@ -4640,10 +4668,14 @@ export function agentRoutes(
       ),
       "add",
     );
+    await assertNewBindingAuthorized(req, { id: agentId, companyId },
+      await secretsSvc.normalizeAdapterConfigForPersistence(companyId, desiredSkillAssignment.adapterConfig,
+        { strictMode: strictSecretsMode, adapterType: createInput.adapterType, dryRun: true }));
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
       adapterType: createInput.adapterType,
       adapterConfig: desiredSkillAssignment.adapterConfig,
+      dryRun: true,
     });
     const normalizedRuntimeConfig = await normalizeCreatedAgentRuntimeConfig(req, companyId, createInput.adapterType, normalizedAdapterConfig, createInput.runtimeConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
@@ -4659,7 +4691,7 @@ export function agentRoutes(
       {
         id: agentId,
         ...createInput,
-        adapterConfig: normalizedAdapterConfig,
+        adapterConfig: desiredSkillAssignment.adapterConfig,
         runtimeConfig: normalizedRuntimeConfig,
         status: "idle",
         spentMonthlyCents: 0,
@@ -4667,6 +4699,8 @@ export function agentRoutes(
       },
       {
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        assertSecretBindingChange: (tx, target, adapterConfig) =>
+          assertNewBindingAuthorized(req, target, adapterConfig, tx),
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
         aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
@@ -5367,12 +5401,18 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         ),
       );
-      const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+      const preflightAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+        existing.companyId, effectiveAdapterConfig,
+        { strictMode: strictSecretsMode, adapterType: requestedAdapterType, dryRun: true },
+      );
+      await assertNewBindingAuthorized(req, existing, preflightAdapterConfig);
+      await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
+        dryRun: true,
       });
-      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
+      patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, effectiveAdapterConfig);
       assertExternalInstructionsAdmin(req, {
         ...existing,
         adapterConfig: patchData.adapterConfig,
@@ -5412,6 +5452,8 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const updateOptions = {
+      assertSecretBindingChange: (tx: Db, target: { id: string; companyId: string }, adapterConfig: unknown) =>
+        assertNewBindingAuthorized(req, target, adapterConfig, tx),
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,

@@ -22,6 +22,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { secretService } from "../services/secrets.js";
+import { newAgentSecretBindings } from "../services/agent-binding-authorization.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -78,6 +79,52 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     return companyId;
   }
 
+  const authorizedHire = (companyId: string, data: Parameters<ReturnType<typeof createAgentLifecycle>["requestHire"]>[1]) =>
+    createAgentLifecycle(db).requestHire(companyId, { id: randomUUID(), ...data }, {
+      assertSecretBindingChange: async () => {},
+    });
+
+  it("serializes a denied and authorized binding update on the same agent", async () => {
+    const companyId = await seedCompany();
+    const secretId = randomUUID();
+    await db.insert(companySecrets).values({ id: secretId, companyId, name: `synthetic-${secretId}`, key: `synthetic-${secretId}` });
+    const deniedSecretId = randomUUID();
+    await db.insert(companySecrets).values({ id: deniedSecretId, companyId, name: `synthetic-${deniedSecretId}`, key: `synthetic-${deniedSecretId}` });
+    const agent = await createAgentLifecycle(db).requestHire(companyId, {
+      name: "Race target", adapterType: "codex_local", adapterConfig: { env: {} },
+    });
+    const patch = { adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref" as const, secretId } } } };
+    const [denied, allowed] = await Promise.allSettled([
+      agentService(db).update(agent.id, { adapterConfig: { env: { OPENAI_API_KEY: { type: "secret_ref", secretId: deniedSecretId } } } }),
+      agentService(db).update(agent.id, patch, { assertSecretBindingChange: async () => {} }),
+    ]);
+    expect(denied.status).toBe("rejected");
+    expect(allowed.status).toBe("fulfilled");
+    const bindings = await db.select().from(companySecretBindings).where(eq(companySecretBindings.targetId, agent.id));
+    expect(bindings).toHaveLength(1);
+    const [saved] = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(saved.adapterConfig).toMatchObject(patch.adapterConfig);
+  });
+
+  it("compares all persisted binding fields including projection class and key", async () => {
+    const companyId = await seedCompany();
+    const secretId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Comparison target", role: "engineer", adapterType: "codex_local", adapterConfig: {} });
+    await db.insert(companySecrets).values({ id: secretId, companyId, name: `synthetic-${secretId}`, key: `synthetic-${secretId}` });
+    await db.insert(companySecretBindings).values({ companyId, targetType: "agent", targetId: agentId, secretId, configPath: "env.SLACK_BOT_TOKEN", versionSelector: "3", projectionClass: "class_3_static_lease", projectionAllowlistKey: "slack.bot_token" });
+    const binding = { type: "secret_ref", secretId, version: 3, projectionClass: "class_3_static_lease", projectionAllowlistKey: "slack.bot_token" };
+    const target = (env: Record<string, unknown>) => ({ id: agentId, companyId, adapterConfig: { env } });
+    expect(await newAgentSecretBindings(db, target({ SLACK_BOT_TOKEN: binding }))).toHaveLength(0);
+    for (const changed of [
+      { ...binding, version: 2 },
+      { ...binding, projectionClass: "unclassified" },
+      { ...binding, projectionAllowlistKey: "another.key" },
+      { ...binding, secretId: randomUUID() },
+    ]) expect(await newAgentSecretBindings(db, target({ SLACK_BOT_TOKEN: changed }))).toHaveLength(1);
+    expect(await newAgentSecretBindings(db, target({ OTHER_TOKEN: binding }))).toHaveLength(1);
+  });
+
   it("creates agent secret bindings when a new agent persists secret_ref env", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
@@ -87,7 +134,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "sk-ant-123",
     });
 
-    const created = await createAgentLifecycle(db).requestHire(companyId, {
+    const created = await authorizedHire(companyId, {
       name: "Claude Novita",
       role: "engineer",
       status: "pending_approval",
@@ -138,7 +185,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "slack-test-token",
     });
 
-    const created = await createAgentLifecycle(db).requestHire(companyId, {
+    const created = await authorizedHire(companyId, {
       name: "Slack Briefing",
       role: "briefing",
       adapterType: "codex_local",
@@ -186,7 +233,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     });
 
     await expect(
-      createAgentLifecycle(db).requestHire(companyId, {
+      authorizedHire(companyId, {
         name: "Unlisted Static Lease",
         role: "engineer",
         adapterType: "codex_local",
@@ -221,7 +268,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const companyId = await seedCompany();
     const literalApiKey = `hermes-key-${randomUUID()}`;
 
-    const created = await createAgentLifecycle(db).requestHire(companyId, {
+    const created = await authorizedHire(companyId, {
       name: "Hermes Gateway",
       role: "engineer",
       status: "idle",
@@ -290,7 +337,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       value: "next-value",
     });
 
-    const created = await createAgentLifecycle(db).requestHire(companyId, {
+    const created = await authorizedHire(companyId, {
       name: "Binding Swapper",
       role: "engineer",
       adapterType: "codex_local",
@@ -310,7 +357,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
           NEW_KEY: { type: "secret_ref", secretId: nextSecret.id, version: "latest" },
         },
       },
-    });
+    }, { assertSecretBindingChange: async () => {} });
 
     const bindings = await db
       .select()
@@ -392,7 +439,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     const missingSecretId = randomUUID();
 
     await expect(
-      createAgentLifecycle(db).requestHire(companyId, {
+      authorizedHire(companyId, {
         name: "Broken Create",
         role: "engineer",
         adapterType: "claude_local",
@@ -422,7 +469,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       provider: "local_encrypted",
       value: "valid-value",
     });
-    const created = await createAgentLifecycle(db).requestHire(companyId, {
+    const created = await authorizedHire(companyId, {
       name: "Transactional Update",
       role: "engineer",
       adapterType: "codex_local",
@@ -443,7 +490,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
             API_KEY: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
           },
         },
-      }),
+      }, { assertSecretBindingChange: async () => {} }),
     ).rejects.toBeTruthy();
 
     const reloaded = await agentService(db).getById(created.id);

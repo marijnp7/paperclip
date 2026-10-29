@@ -1,6 +1,6 @@
 # LAT-15198: self-patch secret binding scope and risk
 
-Base: `c7f78738aafe74cf3ae95de95d4b23e968083570` (`origin/master`, fetched 2026-10-29). This is a preparation artifact, not a fix or deployment. No production probe or secret material was used.
+Base: `c7f78738aafe74cf3ae95de95d4b23e968083570` (`origin/master`, fetched 2026-10-29). This is a preparation artifact, not a deployment. No production probe or real secret material was used.
 
 ## Finding
 
@@ -33,4 +33,12 @@ Use an isolated database and real HTTP authz, with synthetic refs and no materia
 
 ## Risk / disposition
 
-This is a cross-cutting security boundary, not a one-route conditional. A PATCH-only change would leave rollback, create/hire or other config writers as bypasses; a post-normalization denial can leave secret material behind. No code patch is presented as secure yet. CTO should review the inventory and choose the bounded implementation across the transaction boundary before implementation proceeds. This issue remains preparation only; merge/deploy requires the parent governance path and Marijn board approval.
+This is a cross-cutting security boundary. A PATCH-only change would leave rollback, create/hire or other config writers as bypasses; a post-normalization denial can leave secret material behind. This issue remains preparation only; merge/deploy requires the parent governance path and Marijn board approval.
+
+## Implementation after CTO scope decision
+
+The branch now checks the five semantic binding fields against persisted rows. PATCH and create/hire preflight normalized config without materializing schema secret fields, then run the actual normalization inside the write transaction. The shared agent configuration writer rejects new bindings unless the caller supplies an explicit authorization callback; PATCH and rollback callbacks recheck under the existing agent row lock. The create/hire route checks protected-change authority for the concrete new target, separately from `agents:create`. Approval of a pending hire cannot add a new binding through its snapshot. The existing binding-proposal approval is scoped to its approved path and secret. Direct binding writers take the same agent row lock.
+
+The added HTTP tests use an isolated database with synthetic company-secret metadata and real authorization. They cover self config, exact reuse, new binding deny with unchanged tables, board configurator, peer and tenant, merge, replace, env path, selector, projection key, legacy ref without a row, adapter switch, rollback, hire and normalization side effects. Service tests check projection class, all five comparison fields and a concurrent conflicting update. The protected authorization path has no generic self-consent fallback.
+
+Residual review points: the adapter-switch HTTP test proves denial and no write, but another existing adapter policy may also deny that request; projection-class comparison is proven at the service boundary rather than via the HTTP route. The direct secret binding writer is serialized with config updates, but the separate proposal approval flow deserves CTO scrutiny for its two transactions around secret creation and binding application. No production behavior is claimed until parent deployment and verification.
