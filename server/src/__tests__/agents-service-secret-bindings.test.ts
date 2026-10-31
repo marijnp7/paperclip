@@ -419,7 +419,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     });
   });
 
-  it("backfills missing secret bindings when a legacy pending agent is approved", async () => {
+  it("rejects legacy pending hire activation when its config has no persisted binding", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
     const secret = await secrets.create(companyId, {
@@ -451,15 +451,10 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       .where(eq(companySecretBindings.targetId, agentId));
     expect(beforeBindings).toHaveLength(0);
 
-    const approved = await createAgentLifecycle(db).approveHire(agentId);
-
-    expect(approved).toMatchObject({
-      activated: true,
-      agent: {
-        id: agentId,
-        status: "paused",
-        lifecycleState: "preparing",
-      },
+    await expect(createAgentLifecycle(db).approveHire(agentId)).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]).toMatchObject({
+      status: "pending_approval",
+      adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } } },
     });
 
     const afterBindings = await db
@@ -471,11 +466,8 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
         eq(companySecretBindings.targetId, agentId),
       ));
 
-    expect(afterBindings).toHaveLength(1);
-    expect(afterBindings[0]).toMatchObject({
-      secretId: secret.id,
-      configPath: "env.ANTHROPIC_API_KEY",
-    });
+    expect(afterBindings).toHaveLength(0);
+    expect(await db.select().from(companySecretVersions)).toHaveLength(1);
   });
 
   it("rolls back create when binding sync fails", async () => {

@@ -122,10 +122,11 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
     // request, so the new-agent creation default applies.
     patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
   }
+  const effectiveAdapterConfig = patch.adapterConfig ?? existing.adapterConfig;
+  if ((await newAgentSecretBindings(txDb, { ...existing, adapterConfig: effectiveAdapterConfig })).length > 0) {
+    throw forbidden("Hire approval does not authorize a new secret binding; configure the target explicitly after activation");
+  }
   if (hasApprovedAdapterConfig) {
-    if ((await newAgentSecretBindings(txDb, { ...existing, adapterConfig: patch.adapterConfig })).length > 0) {
-      throw forbidden("Hire approval does not authorize a new secret binding; configure the target explicitly after activation");
-    }
     await agentCredentialService(txDb).enforceClaudeOAuthBindingClaim(txDb, {
       companyId: existing.companyId, consume: false, environmentId: null,
       childAdapterConfig: patch.adapterConfig,

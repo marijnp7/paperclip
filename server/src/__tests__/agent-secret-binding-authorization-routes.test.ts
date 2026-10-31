@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, activityLog, agentConfigRevisions, companies, companyMemberships, companySecretBindings, companySecrets, createDb, principalPermissionGrants } from "@paperclipai/db";
+import { agents, activityLog, agentConfigRevisions, approvals, companies, companyMemberships, companySecretBindings, companySecretVersions, companySecrets, createDb, principalPermissionGrants } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentRoutes } from "../routes/agents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -21,10 +21,12 @@ suite("agent secret binding authorization over HTTP", () => {
   }, 30_000);
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(approvals);
     await db.delete(agentConfigRevisions);
     await db.delete(companySecretBindings);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
+    await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(agents);
     await db.delete(companies);
@@ -50,6 +52,44 @@ suite("agent secret binding authorization over HTTP", () => {
     return instance;
   }
   const ref = (secretId: string) => ({ type: "secret_ref", secretId, version: "latest" });
+
+  it.each(["no approval", "approval without adapter config", "adapter type only"])(
+    "denies legacy pending hire activation with %s without any writes",
+    async (variant) => {
+      const f = await fixture();
+      const config = { env: { OPENAI_API_KEY: ref(f.secretId) } };
+      await db.update(agents).set({ status: "pending_approval", adapterConfig: config }).where(eq(agents.id, f.agentId));
+      if (variant !== "no approval") {
+        await db.insert(approvals).values({ companyId: f.companyId, type: "hire_agent", status: "pending",
+          payload: variant === "adapter type only" ? { agentId: f.agentId, adapterType: "codex_local" } : { agentId: f.agentId },
+        });
+      }
+      const beforeAgent = (await db.select().from(agents).where(eq(agents.id, f.agentId)))[0];
+      const beforeApprovals = await db.select().from(approvals);
+      const result = await request(app({ type: "board", userId: "local-board", source: "local_implicit" }))
+        .post(`/api/agents/${f.agentId}/approve`).send({});
+      expect(result.status, JSON.stringify(result.body)).toBe(403);
+      const afterAgent = (await db.select().from(agents).where(eq(agents.id, f.agentId)))[0];
+      expect(afterAgent).toEqual(beforeAgent);
+      expect(await db.select().from(approvals)).toEqual(beforeApprovals);
+      expect(await db.select().from(companySecretBindings)).toHaveLength(0);
+      expect(await db.select().from(companySecrets)).toHaveLength(1);
+      expect(await db.select().from(companySecretVersions)).toHaveLength(0);
+    },
+  );
+
+  it("allows pending hire activation with exact persisted binding reuse", async () => {
+    const f = await fixture();
+    const config = { env: { OPENAI_API_KEY: ref(f.secretId) } };
+    await db.update(agents).set({ status: "pending_approval", adapterConfig: config }).where(eq(agents.id, f.agentId));
+    await db.insert(companySecretBindings).values({ companyId: f.companyId, targetType: "agent", targetId: f.agentId,
+      secretId: f.secretId, configPath: "env.OPENAI_API_KEY" });
+    const result = await request(app({ type: "board", userId: "local-board", source: "local_implicit" }))
+      .post(`/api/agents/${f.agentId}/approve`).send({});
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].status).toBe("paused");
+    expect(await db.select().from(companySecretBindings)).toHaveLength(1);
+  });
 
   it("allows ordinary self config but denies a new binding without any writes", async () => {
     const f = await fixture();
