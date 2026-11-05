@@ -91,6 +91,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        invocationSource: heartbeatRuns.invocationSource,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -109,12 +110,13 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
-    // An unscoped run (timer heartbeat with no checked-out issue) has no source
-    // issue, so every issue write it makes is cross-issue by definition and
-    // spends the cap. The locked run row above is the attribution anchor;
-    // rejecting these writes as run-less left live heartbeat runs unable to
-    // comment or update any task at all.
+    // Only the persisted invocation source can authorize a source-less timer
+    // run. Context snapshot fields and request headers cannot grant this path.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    if (sourceIssueId === null && run.invocationSource !== "timer") {
+      throw crossIssueInfluenceRunContextError();
+    }
+    const sourceType = sourceIssueId === null ? "agent" : "issue";
     if (
       sourceIssueId !== null &&
       (sourceIssueId === input.targetIssueId ||
@@ -149,6 +151,8 @@ export async function observeCrossIssueInfluence(
       details: {
         kind: input.kind,
         sourceIssueId,
+        sourceAgentId: sourceIssueId === null ? run.agentId : null,
+        sourceType,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         count: decision.count,
@@ -165,6 +169,8 @@ export async function observeCrossIssueInfluence(
       runId: input.runId,
       agentId: input.agentId,
       sourceIssueId,
+      sourceAgentId: sourceIssueId === null ? run.agentId : null,
+      sourceType,
       targetIssueId: input.targetIssueId,
       kind: input.kind,
       count: decision.count,
