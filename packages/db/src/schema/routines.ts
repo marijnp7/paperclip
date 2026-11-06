@@ -29,6 +29,7 @@ export const routines = pgTable(
     folderId: uuid("folder_id").references(() => folders.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id, { onDelete: "set null" }),
     parentIssueId: uuid("parent_issue_id").references(() => issues.id, { onDelete: "set null" }),
+    executionPolicy: jsonb("execution_policy").$type<import("@paperclipai/shared").IssueExecutionPolicy>(),
     title: text("title").notNull(),
     description: text("description"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),

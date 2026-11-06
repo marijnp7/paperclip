@@ -1,3 +1,4 @@
+import { consumeExistingStageApproval } from "./issue-existing-approval.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, touchedByUserCondition } from "./issue-participation.js";
@@ -11109,6 +11110,11 @@ export function issueService(db: Db) {
           throw conflict("The task execution settings changed. Try cancelling the monitor again.", {
             code: "execution_policy_changed",
           });
+        }
+        await consumeExistingStageApproval(tx, receiptExisting, patch, { agentId: actorAgentId, userId: actorUserId });
+        if (patch.status === "done") {
+          issueData.status = "done";
+          applyStatusSideEffects("done", patch);
         }
         if (changesPrivacy) {
           const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : receiptExisting.projectId;
