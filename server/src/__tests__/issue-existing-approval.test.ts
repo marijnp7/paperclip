@@ -53,6 +53,10 @@ const support = await getEmbeddedPostgresTestSupport();
       next();
     });
     app.use("/api", issueRoutes(db, {} as any));
+    app.use(((error, _req, _res, next) => {
+      if (!error.status || error.status >= 500) console.error(error);
+      next(error);
+    }) as express.ErrorRequestHandler);
     app.use(errorHandler);
     return app;
   }

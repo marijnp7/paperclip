@@ -14396,12 +14396,15 @@ export function issueRoutes(
         actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
+      // A review decision can consume an existing approval inside svc.update,
+      // changing the final status from the requested in_review to done.
+      const mayCompleteExecution = transition.decision?.outcome === "approved";
       const shouldCollectCompletionPublication =
         actor.actorType === "user" &&
         existing.status !== "done" &&
-        updateFields.status === "done";
+        (updateFields.status === "done" || mayCompleteExecution);
       const shouldCollectTerminalIssueActions =
-        updateFields.status === "done" || updateFields.status === "cancelled";
+        updateFields.status === "done" || updateFields.status === "cancelled" || mayCompleteExecution;
       const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
         if (tx) {
           if (shouldCollectCompletionPublication) {
