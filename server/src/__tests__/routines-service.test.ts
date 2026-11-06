@@ -1,4 +1,4 @@
-import { subscribeDatabaseWork } from "@paperclipai/db";
+import { reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -60,6 +60,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Expected revision conflicts retain uncertain work signals until reconciled.
+    // Settle those aborted transactions before the next test subscribes.
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.routineSchedules);
     if (originalSecretsProviderEnv === undefined) {
       delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     } else {
