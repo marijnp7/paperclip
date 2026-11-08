@@ -89,6 +89,7 @@ export function buildExecutionPolicy(input: {
       type: "approval" as const,
       approvalsNeeded: 1 as const,
       participants: approvalParticipants,
+      ...(existingApprovalStage?.existingApproval ? { existingApproval: existingApprovalStage.existingApproval } : {}),
     });
   }
 

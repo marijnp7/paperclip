@@ -1,3 +1,4 @@
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { verifyAppWebhook } from "./app-webhook.js";
 import crypto from "node:crypto";
@@ -579,6 +580,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     activityGateScope: routine.activityGateScope as RoutineRevisionSnapshotV1["routine"]["activityGateScope"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    executionPolicy: routine.executionPolicy ?? null,
     responsibleUserId: routine.responsibleUserId ?? null,
   };
 }
@@ -1941,6 +1943,7 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            executionPolicy: input.routine.executionPolicy ? { ...input.routine.executionPolicy } : null,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -2346,6 +2349,7 @@ export function routineService(
             activityGatePolicy: input.activityGatePolicy ?? "always",
             activityGateScope: input.activityGateScope ?? "company",
             variables,
+            executionPolicy: normalizeIssueExecutionPolicy(input.executionPolicy),
             env,
             responsibleUserId,
             createdByAgentId: actor.agentId ?? null,
@@ -2463,6 +2467,9 @@ export function routineService(
           activityGatePolicy: patch.activityGatePolicy ?? locked.activityGatePolicy,
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
+          executionPolicy: patch.executionPolicy === undefined
+            ? locked.executionPolicy
+            : normalizeIssueExecutionPolicy(patch.executionPolicy),
           env: nextEnv,
           responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
@@ -2529,6 +2536,7 @@ export function routineService(
             activityGateScope: candidate.activityGateScope,
             variables: candidate.variables,
             env: candidate.env,
+            executionPolicy: candidate.executionPolicy,
             responsibleUserId: candidate.responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
@@ -2875,6 +2883,7 @@ export function routineService(
             activityGateScope: routineSnapshot.activityGateScope,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
+            executionPolicy: normalizeIssueExecutionPolicy(routineSnapshot.executionPolicy ?? null),
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: now,

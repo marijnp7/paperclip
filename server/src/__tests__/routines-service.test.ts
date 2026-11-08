@@ -1,4 +1,4 @@
-import { subscribeDatabaseWork } from "@paperclipai/db";
+import { reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -60,6 +60,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Expected revision conflicts retain uncertain work signals until reconciled.
+    // Settle those aborted transactions before the next test subscribes.
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.routineSchedules);
     if (originalSecretsProviderEnv === undefined) {
       delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     } else {
@@ -215,6 +218,39 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
+
+  it("persists, dispatches, clears and restores optional execution policies", async () => {
+    const { routine, svc, issueSvc } = await seedFixture();
+    const policy = { stages: [{ type: "review" as const, participants: [{ type: "user" as const, userId: "independent-reviewer" }] }] };
+    const updated = await svc.update(routine.id, { executionPolicy: policy }, {});
+    expect(updated?.executionPolicy?.stages[0].type).toBe("review");
+    const saved = updated!.executionPolicy;
+    const revision = updated!.latestRevisionId!;
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+    expect((await issueSvc.getById(run.linkedIssueId!))?.executionPolicy).toEqual(saved);
+    const changed = await svc.update(routine.id, { title: "Retain policy" }, {});
+    expect(changed?.executionPolicy).toEqual(saved);
+    await svc.update(routine.id, { executionPolicy: null }, {});
+    const restored = await svc.restoreRevision(routine.id, revision, {});
+    expect(restored.routine.executionPolicy).toEqual(saved);
+    expect(restored.revision.snapshot.routine.executionPolicy).toEqual(saved);
+    const legacy = await svc.restoreRevision(routine.id, routine.latestRevisionId!, {});
+    expect(legacy.routine.executionPolicy).toBeNull();
+  });
+
+  it("guards concurrent policy updates by revision and preserves policy on coalesced dispatch", async () => {
+    const { routine, svc, issueSvc } = await seedFixture();
+    const results = await Promise.allSettled(["reviewer-a", "reviewer-b"].map(userId => svc.update(routine.id, {
+      baseRevisionId: routine.latestRevisionId,
+      executionPolicy: { stages: [{ type: "review", participants: [{ type: "user", userId }] }] },
+    }, {})));
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter(r => r.status === "rejected")).toHaveLength(1);
+    const winner = results.find(r => r.status === "fulfilled") as PromiseFulfilledResult<any>;
+    const runs = await Promise.all([svc.runRoutine(routine.id, { source: "manual" }), svc.runRoutine(routine.id, { source: "manual" })]);
+    expect(new Set(runs.map(r => r.linkedIssueId)).size).toBe(1);
+    expect((await issueSvc.getById(runs[0].linkedIssueId!))?.executionPolicy).toEqual(winner.value.executionPolicy);
+  });
 
   it("notifies scheduled routine work after trigger transactions settle", async () => {
     const f = await seedFixture();

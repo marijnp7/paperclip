@@ -1,0 +1,1 @@
+ALTER TABLE "routines" ADD COLUMN "execution_policy" jsonb;

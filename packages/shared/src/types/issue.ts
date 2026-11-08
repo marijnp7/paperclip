@@ -712,6 +712,7 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
 export interface IssueExecutionStage {
   id: string;
   type: IssueExecutionStageType;
+  existingApproval?: { approvalId: string; scope: string };
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
 }

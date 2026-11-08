@@ -395,8 +395,16 @@ export const issueExecutionStageParticipantSchema =
 export const issueExecutionStageSchema = z.object({
   id: z.string().guid().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+  existingApproval: z.object({
+    approvalId: z.string().guid(),
+    scope: z.string().trim().min(1).max(500),
+  }).strict().optional(),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
+}).superRefine((stage, ctx) => {
+  if (stage.existingApproval && (stage.type !== "approval" || stage.participants.length !== 1 || stage.participants[0].type !== "user")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["existingApproval"], message: "Existing approvals require an approval stage with one explicit user participant" });
+  }
 });
 
 export const issueExecutionMonitorPolicySchema = z.object({

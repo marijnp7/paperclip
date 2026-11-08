@@ -11,6 +11,7 @@ import {
   ROUTINE_VARIABLE_TYPES,
 } from "../constants.js";
 import {
+  issueExecutionPolicySchema,
   ISSUE_EXECUTION_WORKSPACE_PREFERENCES,
   issueExecutionWorkspaceSettingsSchema,
 } from "./issue.js";
@@ -78,6 +79,7 @@ export const createRoutineSchema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional().default([]),
   env: envConfigSchema.optional().nullable(),
+  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
 });
 
 export type CreateRoutine = z.infer<typeof createRoutineSchema>;
@@ -105,6 +107,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).default("company"),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
+  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   responsibleUserId: z.string().nullable().default(null),
 }).strict();
 

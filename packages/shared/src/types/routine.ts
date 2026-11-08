@@ -69,6 +69,8 @@ export interface RoutineVariable {
 
 export type RoutineEnvConfig = Record<string, EnvBinding>;
 
+import type { IssueExecutionPolicy } from "./issue.js";
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -89,6 +91,7 @@ export interface Routine {
   originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  executionPolicy?: IssueExecutionPolicy | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -133,6 +136,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   originKind?: string;
   originId?: string | null;
   variables: RoutineVariable[];
+  executionPolicy?: IssueExecutionPolicy | null;
   env: RoutineEnvConfig | null;
   responsibleUserId: string | null;
 }
