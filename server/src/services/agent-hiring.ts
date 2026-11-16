@@ -2,7 +2,9 @@ import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/share
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { collectSecretRefs } from "./agent-secret-bindings.js";
+import { newAgentSecretBindings } from "./agent-binding-authorization.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
   deduplicateAgentName, type CreateAgentData, type CreateAgentOptions, type AgentConfigurationPatch, type AgentHireRecord } from "../lib/agent-records.js";
 import { normalizeAgentPermissions, permissionsImplyLowTrust, NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS,
@@ -44,6 +46,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+  if (collectSecretRefs(adapterConfig).length > 0) {
+    if (!data.id || !options?.assertSecretBindingChange) throw forbidden("Explicit agent secret binding authorization required");
+    await options.assertSecretBindingChange(db, { id: data.id, companyId }, adapterConfig);
+  }
   await agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
     companyId, consume: true, environmentId: data.defaultEnvironmentId ?? null,
     childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,
@@ -115,6 +121,10 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
     // The pending-approval activation replays the original hire
     // request, so the new-agent creation default applies.
     patch.permissions = normalizeAgentPermissions(patch.permissions, { context: "create" });
+  }
+  const effectiveAdapterConfig = patch.adapterConfig ?? existing.adapterConfig;
+  if ((await newAgentSecretBindings(txDb, { ...existing, adapterConfig: effectiveAdapterConfig })).length > 0) {
+    throw forbidden("Hire approval does not authorize a new secret binding; configure the target explicitly after activation");
   }
   if (hasApprovedAdapterConfig) {
     await agentCredentialService(txDb).enforceClaudeOAuthBindingClaim(txDb, {

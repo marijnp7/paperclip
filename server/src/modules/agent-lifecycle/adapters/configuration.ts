@@ -5,6 +5,8 @@ import { agentRecordQueries, AGENT_CONFIGURATION_FIELDS, jsonEqual, type AgentCo
 import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { AgentLifecycleConflict } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
+import { newAgentSecretBindings } from "../../../services/agent-binding-authorization.js";
+import { forbidden } from "../../../errors.js";
 
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
@@ -13,6 +15,12 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   if (!current) return null;
   const patch = await effects.prepareConfiguration(tx, current, data, options);
   assertConfigurationFields(patch);
+  if (Object.prototype.hasOwnProperty.call(patch, "adapterConfig")) {
+    if ((await newAgentSecretBindings(tx, { ...current, adapterConfig: patch.adapterConfig })).length > 0) {
+      if (!options?.assertSecretBindingChange) throw forbidden("Explicit agent secret binding authorization required");
+      await options.assertSecretBindingChange(tx, current, patch.adapterConfig);
+    }
+  }
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
   const invalidate = changed && ["preparing", "verifying", "resuming"].includes(current.lifecycleState);

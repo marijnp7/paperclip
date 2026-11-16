@@ -88,6 +88,9 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
     activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null, requestedByUserId?: string | null) => {
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const [locked] = await tx.select({ id: agents.id }).from(agents)
+          .where(eq(agents.id, id)).for("no key update");
+        if (!locked) return null;
         const existing = await agentRecordQueries(txDb).getById(id);
         if (!existing || existing.status !== "pending_approval") return null;
         const patch = await effects.prepareHireApproval(txDb, existing, approvedPayload);

@@ -78,6 +78,8 @@ export interface UpdateAgentOptions {
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
   claudeLogin?: ClaudeLoginContext;
+  // Called after taking the target row lock, before any configuration write.
+  assertSecretBindingChange?: (db: Db, target: AgentConfigurationRecord, adapterConfig: unknown) => Promise<void>;
 }
 
 export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation"> & { runner?: AgentRunnerChoice };
@@ -87,6 +89,7 @@ export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, t
 export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  assertSecretBindingChange?: (db: Db, target: { id: string; companyId: string }, adapterConfig: unknown) => Promise<void>;
   runnerResolved?: boolean;
   responsibleUserId?: string | null;
   createdByUserId?: string | null;

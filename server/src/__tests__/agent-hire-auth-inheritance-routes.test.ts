@@ -129,6 +129,8 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
         permissions: { canCreateAgents: true },
       })
       .returning();
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: row!.id, status: "active", membershipRole: "member" });
+    await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: row!.id, permissionKey: "agents:configure" });
     return row!;
   }
 

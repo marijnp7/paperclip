@@ -978,6 +978,7 @@ export function secretService(db: Db | DbTransaction) {
     strictMode?: boolean;
     adapterType?: string | null;
     actor?: { userId?: string | null; agentId?: string | null };
+    dryRun?: boolean;
   };
 
   async function getById(id: string, source: Pick<Db | DbTransaction, "select"> = db) {
@@ -1950,6 +1951,7 @@ export function secretService(db: Db | DbTransaction) {
         key,
         rawValue: adapterConfig[key],
         actor: opts?.actor,
+        dryRun: opts?.dryRun,
       });
       if (value === undefined) {
         delete normalized[key];
@@ -1986,6 +1988,7 @@ export function secretService(db: Db | DbTransaction) {
       key: string;
       rawValue: unknown;
       actor?: { userId?: string | null; agentId?: string | null };
+      dryRun?: boolean;
     },
   ): Promise<EnvBinding | undefined> {
     if (input.rawValue === null || input.rawValue === undefined) return undefined;
@@ -2013,6 +2016,7 @@ export function secretService(db: Db | DbTransaction) {
       throw unprocessable(`Refusing to persist redacted placeholder for key: ${input.key}`);
     }
     const id = randomUUID();
+    if (input.dryRun) return { type: "secret_ref", secretId: id, version: "latest" };
     const adapterPart = normalizeSecretKey(input.adapterType ?? "adapter");
     const fieldPart = normalizeSecretKey(input.key);
     const secret = await createManagedLocalSecret(companyId, {
@@ -4720,7 +4724,13 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass: input.projectionClass,
         projectionAllowlistKey: input.projectionAllowlistKey,
       });
-      const existing = await db
+      return db.transaction(async (tx) => {
+        if (input.targetType === "agent") {
+          await tx.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.id, input.targetId), eq(agents.companyId, input.companyId),
+          )).for("no key update");
+        }
+        const existing = await tx
         .select()
         .from(companySecretBindings)
         .where(
@@ -4732,8 +4742,8 @@ export function secretService(db: Db | DbTransaction) {
           ),
         )
         .then((rows) => rows[0] ?? null);
-      if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
-      return db
+        if (existing) throw conflict(`Secret binding already exists at ${input.configPath}`);
+        return tx
         .insert(companySecretBindings)
         .values({
           companyId: input.companyId,
@@ -4749,6 +4759,7 @@ export function secretService(db: Db | DbTransaction) {
         })
         .returning()
         .then((rows) => rows[0]);
+      });
     },
 
     syncSecretRefsForTarget: async (
@@ -4799,6 +4810,11 @@ export function secretService(db: Db | DbTransaction) {
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
 
       await db.transaction(async (tx) => {
+        if (target.targetType === "agent") {
+          await tx.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.id, target.targetId), eq(agents.companyId, companyId),
+          )).for("no key update");
+        }
         if (options?.replaceAll) {
           await tx
             .delete(companySecretBindings)
@@ -5083,6 +5099,11 @@ export function secretService(db: Db | DbTransaction) {
       }
 
       const writeBindings = async (targetDb: SecretBindingDb) => {
+        if (target.targetType === "agent") {
+          await targetDb.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.id, target.targetId), eq(agents.companyId, companyId),
+          )).for("no key update");
+        }
         await targetDb
           .delete(companySecretBindings)
           .where(
